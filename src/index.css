@@ -187,8 +187,8 @@ a{color:var(--c-teacher);text-decoration:none}a:hover{text-decoration:underline}
 .wa-icon-btn.active{opacity:1;background:rgba(255,255,255,.2)}
 
 /* Chat background */
-.wa-chat-bg{flex:1;overflow-y:auto;background:#e5ddd5;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Crect width='60' height='60' fill='%23e5ddd5'/%3E%3Ccircle cx='30' cy='30' r='1' fill='%23d4c9bc' opacity='.4'/%3E%3C/svg%3E")}
-.chat-messages{padding:var(--sp-3) var(--sp-4);display:flex;flex-direction:column;gap:6px;min-height:100%}
+.wa-chat-bg{flex:1;overflow-y:auto;display:flex;flex-direction:column;background:#e5ddd5;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Crect width='60' height='60' fill='%23e5ddd5'/%3E%3Ccircle cx='30' cy='30' r='1' fill='%23d4c9bc' opacity='.4'/%3E%3C/svg%3E")}
+.chat-messages{flex:1;padding:var(--sp-3) var(--sp-4);display:flex;flex-direction:column;gap:6px}
 
 /* System message */
 .wa-system{display:flex;justify-content:center;margin:var(--sp-2) 0}
