@@ -38,9 +38,44 @@ GRAMMAR STRUCTURE TO DETECT: "${scenario.scoringCriteria.grammarStructure}"
 MAIN OBJECTIVE: "${scenario.objective}"`
 }
 
+/**
+ * Translate the scenario's opening phrase into the chosen language.
+ * Returns the original phrase if language is Français or if the call fails.
+ */
+export async function getLocalizedOpening(apiKey, phrase, language) {
+  if (!phrase || language === 'Français') return phrase
+  const langNames = { English: 'English', Español: 'Spanish', Deutsch: 'German' }
+  const target = langNames[language] || language
+  try {
+    const res = await fetch(ANTHROPIC_API, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'anthropic-dangerous-direct-browser-access': 'true'
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 300,
+        messages: [{
+          role: 'user',
+          content: `Translate this phrase into ${target}. Preserve the character's tone and emotion exactly. Return ONLY the translated phrase, no explanation:\n"${phrase}"`
+        }]
+      })
+    })
+    if (!res.ok) return phrase
+    const data = await res.json()
+    const text = data.content?.[0]?.text?.trim() || ''
+    // Strip surrounding quotes if present
+    return text.replace(/^[""]|[""]$/g, '') || phrase
+  } catch {
+    return phrase
+  }
+}
+
 /** Extract JSON robustly — handles text before/after, markdown fences, etc. */
 function extractJSON(raw) {
-  // Strategy 1: find first { and track braces to find the matching }
   const start = raw.indexOf('{')
   if (start !== -1) {
     let depth = 0
@@ -51,7 +86,6 @@ function extractJSON(raw) {
       }}
     }
   }
-  // Strategy 2: strip markdown fences and try again
   const stripped = raw.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim()
   try { return JSON.parse(stripped) } catch {}
   return null
@@ -74,7 +108,6 @@ export async function sendMessage(apiKey, systemPrompt, history, studentMessage)
   const parsed = extractJSON(raw)
   if (parsed) return parsed
 
-  // Last resort fallback: extract message text before any JSON block
   const jsonIdx = raw.indexOf('{')
   const fallbackMsg = jsonIdx > 0 ? raw.slice(0, jsonIdx).trim() : raw.trim()
   return {
