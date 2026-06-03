@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { buildSystemPrompt, sendMessage, calculateScore, getLocalizedOpening } from '../utils/claude'
 import { transcribeAudio, startRecording, checkMicrophoneAvailable } from '../utils/whisper'
-import { speak, stopSpeaking } from '../utils/tts'
+import { speak, stopSpeaking, initKokoro, isKokoroReady } from '../utils/tts'
 
 const DIFF_LABELS = ['','🌱','🌿','⚡','🔥','💎']
 
@@ -13,7 +13,7 @@ function formatDuration(s) {
   return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`
 }
 
-// ── Fake waveform bars (deterministic from index) ─────────────────────────────
+// ── Fake waveform bars ────────────────────────────────────────────────────────
 function WaveformBars({ count = 32 }) {
   const bars = useMemo(() => Array.from({length:count}, (_,i) => 25 + ((Math.sin(i*0.8)+1)*30 + (Math.sin(i*1.7)+1)*15)), [count])
   return (
@@ -24,19 +24,17 @@ function WaveformBars({ count = 32 }) {
 }
 
 // ── Audio message player ──────────────────────────────────────────────────────
-function AudioPlayer({ blob, transcription, isUser }) {
+function AudioPlayer({ blob, transcription }) {
   const [playing, setPlaying] = useState(false)
   const [progress, setProgress] = useState(0)
   const [duration, setDuration] = useState(0)
   const audioRef = useRef()
   const url = useMemo(() => URL.createObjectURL(blob), [blob])
   useEffect(() => () => URL.revokeObjectURL(url), [url])
-
   const toggle = () => {
     if (playing) { audioRef.current.pause(); setPlaying(false) }
     else { audioRef.current.play(); setPlaying(true) }
   }
-
   return (
     <div className="wa-audio-player">
       <audio ref={audioRef} src={url}
@@ -54,19 +52,34 @@ function AudioPlayer({ blob, transcription, isUser }) {
   )
 }
 
+// ── Kokoro loading banner ─────────────────────────────────────────────────────
+function KokoroBanner({ pct }) {
+  if (pct >= 100) return null
+  return (
+    <div style={{
+      padding:'6px 16px', background:'#f0fdf4', borderBottom:'1px solid #bbf7d0',
+      fontSize:'12px', color:'#166534', display:'flex', alignItems:'center', gap:10
+    }}>
+      <span>🤖 Chargement voix IA (Kokoro)</span>
+      <div style={{flex:1, height:6, background:'#dcfce7', borderRadius:3, overflow:'hidden'}}>
+        <div style={{width:`${pct}%`, height:'100%', background:'#16a34a', transition:'width .3s'}} />
+      </div>
+      <span style={{minWidth:36, textAlign:'right'}}>{pct}%</span>
+    </div>
+  )
+}
+
 // ── Single chat message ───────────────────────────────────────────────────────
 function WaMessage({ msg, onPlayTTS, ttsPlaying }) {
   const { role, content, audioBlob, transcription, feedback, timestamp } = msg
-  if (role === 'system') return (
-    <div className="wa-system"><span>{content}</span></div>
-  )
+  if (role === 'system') return <div className="wa-system"><span>{content}</span></div>
   const isUser = role === 'user'
   return (
     <div className={`wa-row ${isUser ? 'wa-row-user' : 'wa-row-bot'}`}>
       {!isUser && <div className="wa-avatar">🎭</div>}
       <div className={`wa-bubble ${isUser ? 'wa-bubble-user' : 'wa-bubble-bot'}`}>
         {audioBlob
-          ? <AudioPlayer blob={audioBlob} transcription={transcription} isUser={isUser} />
+          ? <AudioPlayer blob={audioBlob} transcription={transcription} />
           : <div className="wa-text">{content}</div>
         }
         <div className="wa-meta">
@@ -109,13 +122,21 @@ export default function GameView({ config, settings, onEnd }) {
   const [ttsPlayingId, setTtsPlayingId] = useState(null)
   const [autoTTS, setAutoTTS] = useState(true)
   const [openingReady, setOpeningReady] = useState(false)
+  const [kokoroPct, setKokoroPct] = useState(isKokoroReady() ? 100 : 0)
 
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const systemPrompt = useRef(buildSystemPrompt(scenario, difficulty, language))
   const toastTimer = useRef(null)
 
-  // Initialise chat: translate opening phrase if needed, then speak it
+  // Pre-warm Kokoro model in background
+  useEffect(() => {
+    if (!isKokoroReady()) {
+      initKokoro((pct) => setKokoroPct(pct))
+    }
+  }, [])
+
+  // Initialise chat: translate opening phrase, then speak it
   useEffect(() => {
     let cancelled = false
     async function init() {
@@ -158,9 +179,7 @@ export default function GameView({ config, settings, onEnd }) {
     setInputText(''); setError(null); setIsThinking(true)
     const turn = turnCount + 1; setTurnCount(turn)
 
-    const userMsg = {
-      role: 'user', content: trimmed, audioBlob, transcription, timestamp: Date.now()
-    }
+    const userMsg = { role:'user', content:trimmed, audioBlob, transcription, timestamp:Date.now() }
     setMessages(prev => [...prev, userMsg])
     const newHistory = [...apiHistory, { role:'user', content:trimmed }]
 
@@ -179,7 +198,6 @@ export default function GameView({ config, settings, onEnd }) {
         if (pointsThisTurn > 0) showToast(`+${pointsThisTurn} pts !`)
       }
 
-      // Auto TTS with OpenAI key
       if (autoTTS) {
         setTtsPlayingId(botText.slice(0,20))
         speak(botText, language, ttsOpts, settings.openaiKey).then(() => setTtsPlayingId(null))
@@ -207,7 +225,7 @@ export default function GameView({ config, settings, onEnd }) {
         const text = await transcribeAudio(settings.openaiKey, blob, language); setIsThinking(false)
         if (text.trim()) {
           if (scenario.interactionMode === 'oral') handleSend(text, blob, text)
-          else { setInputText(text) }
+          else setInputText(text)
         } else setError('Transcription vide. Réessayez.')
       } catch (err) { setIsThinking(false); setIsRecording(false); setRecorderRef(null); setError(`❌ ${err.message}`) }
     } else {
@@ -236,7 +254,9 @@ export default function GameView({ config, settings, onEnd }) {
             <span className="score-pill-label">SCORE</span>
             <span className="score-pill-value">{score}</span>
           </div>
-          <button className={`wa-icon-btn ${autoTTS?'active':''}`} onClick={() => { setAutoTTS(!autoTTS); if(autoTTS) stopSpeaking() }} title={autoTTS?"Couper l'audio automatique":"Activer l'audio automatique"}>
+          <button className={`wa-icon-btn ${autoTTS?'active':''}`}
+            onClick={() => { setAutoTTS(!autoTTS); if(autoTTS) stopSpeaking() }}
+            title={autoTTS?"Couper l'audio":"Activer l'audio"}>
             {autoTTS ? '🔊' : '🔇'}
           </button>
           <button className="wa-icon-btn" onClick={() => setShowResources(!showResources)} title="Ressources">📚</button>
@@ -244,10 +264,13 @@ export default function GameView({ config, settings, onEnd }) {
         </div>
       </div>
 
+      {/* ── Kokoro loading banner ── */}
+      <KokoroBanner pct={kokoroPct} />
+
       {/* ── Resources overlay ── */}
       {showResources && (
         <div className="modal-overlay" onClick={() => setShowResources(false)}>
-          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth:600, maxHeight:'80vh', overflow:'auto' }}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{maxWidth:600,maxHeight:'80vh',overflow:'auto'}}>
             <h3>📚 Ressources</h3>
             <p className="modal-subtitle">{scenario.studentInstructions}</p>
             {scenario.links?.length > 0 && <div style={{marginBottom:16}}>
@@ -305,7 +328,7 @@ export default function GameView({ config, settings, onEnd }) {
           </div>
         </div>
 
-        {/* ── Chat area (WhatsApp style) ── */}
+        {/* ── Chat area ── */}
         <div className="chat-area">
           <div className="wa-chat-bg">
             <div className="chat-messages" id="chat-messages">
@@ -356,7 +379,7 @@ export default function GameView({ config, settings, onEnd }) {
             )}
             <textarea ref={textareaRef} className="wa-input-textarea"
               value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={handleKeyDown}
-              placeholder={!openingReady ? '⏳ Traduction en cours…' : isRecording ? '🔴 Enregistrement… cliquez ⏹️ pour terminer' : gameOver ? 'Jeu terminé !' : `Message en ${language}… (Entrée pour envoyer)`}
+              placeholder={!openingReady ? '⏳ Traduction en cours…' : isRecording ? '🔴 Enregistrement…' : gameOver ? 'Jeu terminé !' : `Message en ${language}… (Entrée pour envoyer)`}
               disabled={isThinking||isRecording||gameOver||!openingReady} rows={1} />
             <button className="wa-send-btn" onClick={() => handleSend(inputText)}
               disabled={!inputText.trim()||isThinking||isRecording||gameOver||!openingReady}>
