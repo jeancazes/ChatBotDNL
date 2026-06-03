@@ -23,29 +23,38 @@ INTERACTION LANGUAGE: ${language}
 ${diffDesc}
 SECONDARY OBJECTIVES: ${secondaryObjectives}
 
-STRICT RULES:
+CRITICAL RULES:
 1. ALWAYS write your "message" field in ${language}.
 2. Stay strictly in character — never admit you are an AI.
 3. Match language complexity to difficulty level.
 4. Once you accept an argument, keep that ground.
-5. You MUST respond with ONLY a valid JSON object — no text before or after.
+5. OUTPUT ONLY THE JSON OBJECT — absolutely no text before or after it.
 
-RESPONSE FORMAT:
-{
-  "message": "Your in-character response in ${language}",
-  "scoring": {
-    "vocabulary_used": ["words from the list used by student"],
-    "argument_accepted": false,
-    "language_quality": true,
-    "grammar_structure_used": false,
-    "objective_reached": false
-  },
-  "feedback": "One sentence in French: what the student did well or should improve"
-}
+RESPONSE FORMAT — output ONLY this JSON, with NO surrounding text:
+{"message":"Your in-character response in ${language}","scoring":{"vocabulary_used":[],"argument_accepted":false,"language_quality":true,"grammar_structure_used":false,"objective_reached":false},"feedback":"One sentence in French about what the student did well or should improve"}
 
 VOCABULARY LIST: [${vocab}]
 GRAMMAR STRUCTURE TO DETECT: "${scenario.scoringCriteria.grammarStructure}"
 MAIN OBJECTIVE: "${scenario.objective}"`
+}
+
+/** Extract JSON robustly — handles text before/after, markdown fences, etc. */
+function extractJSON(raw) {
+  // Strategy 1: find first { and track braces to find the matching }
+  const start = raw.indexOf('{')
+  if (start !== -1) {
+    let depth = 0
+    for (let i = start; i < raw.length; i++) {
+      if (raw[i] === '{') depth++
+      else if (raw[i] === '}') { depth--; if (depth === 0) {
+        try { return JSON.parse(raw.slice(start, i + 1)) } catch {}
+      }}
+    }
+  }
+  // Strategy 2: strip markdown fences and try again
+  const stripped = raw.replace(/```json\s*/gi, '').replace(/```\s*/gi, '').trim()
+  try { return JSON.parse(stripped) } catch {}
+  return null
 }
 
 export async function sendMessage(apiKey, systemPrompt, history, studentMessage) {
@@ -55,12 +64,24 @@ export async function sendMessage(apiKey, systemPrompt, history, studentMessage)
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
     body: JSON.stringify({ model: MODEL, max_tokens: 1024, system: systemPrompt, messages }),
   })
-  if (!res.ok) { let msg = `Erreur API Claude (${res.status})`; try { const err = await res.json(); msg = err.error?.message || msg } catch {}; throw new Error(msg) }
+  if (!res.ok) {
+    let msg = `Erreur API Claude (${res.status})`
+    try { const err = await res.json(); msg = err.error?.message || msg } catch {}
+    throw new Error(msg)
+  }
   const data = await res.json()
   const raw = data.content?.[0]?.text || ''
-  const cleaned = raw.replace(/^```json\s*/i,'').replace(/^```\s*/i,'').replace(/\s*```$/,'').trim()
-  try { return JSON.parse(cleaned) }
-  catch { return { message: raw || '...', scoring: { vocabulary_used:[], argument_accepted:false, language_quality:true, grammar_structure_used:false, objective_reached:false }, feedback:'' } }
+  const parsed = extractJSON(raw)
+  if (parsed) return parsed
+
+  // Last resort fallback: extract message text before any JSON block
+  const jsonIdx = raw.indexOf('{')
+  const fallbackMsg = jsonIdx > 0 ? raw.slice(0, jsonIdx).trim() : raw.trim()
+  return {
+    message: fallbackMsg || '...',
+    scoring: { vocabulary_used:[], argument_accepted:false, language_quality:true, grammar_structure_used:false, objective_reached:false },
+    feedback: ''
+  }
 }
 
 export function calculateScore(currentScore, criteria, scoring, usedWords) {
