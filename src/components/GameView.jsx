@@ -1,9 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { buildSystemPrompt, sendMessage, calculateScore, getLocalizedOpening } from '../utils/claude'
 import { transcribeAudio, startRecording, checkMicrophoneAvailable } from '../utils/whisper'
-import { speak, stopSpeaking, initKokoro, isKokoroReady } from '../utils/tts'
+import { speak, stopSpeaking, generateAudioBlob, playBlob, initKokoro, isKokoroReady } from '../utils/tts'
 
 const DIFF_LABELS = ['','🌱','🌿','⚡','🔥','💎']
+const TRANSCRIPTION_PENALTY = 5
+// Probability of a bot message being voice-only, by difficulty level (index = difficulty)
+const VOICE_ONLY_PROBA = [0, 0, 0, 0.15, 0.30, 0.50]
 
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' })
@@ -13,24 +16,29 @@ function formatDuration(s) {
   return `${Math.floor(s/60)}:${String(Math.floor(s%60)).padStart(2,'0')}`
 }
 
-// ── Fake waveform bars ────────────────────────────────────────────────────────
-function WaveformBars({ count = 32 }) {
+// ── Waveform ──────────────────────────────────────────────────────────────────
+function WaveformBars({ count = 32, playing = false }) {
   const bars = useMemo(() => Array.from({length:count}, (_,i) => 25 + ((Math.sin(i*0.8)+1)*30 + (Math.sin(i*1.7)+1)*15)), [count])
   return (
     <div className="wa-waveform">
-      {bars.map((h,i) => <div key={i} className="wa-waveform-bar" style={{height:`${h}%`}} />)}
+      {bars.map((h,i) => (
+        <div key={i} className={`wa-waveform-bar${playing ? ' wa-waveform-bar--playing' : ''}`}
+          style={{height:`${h}%`, animationDelay: playing ? `${i * 30}ms` : '0ms'}} />
+      ))}
     </div>
   )
 }
 
-// ── Audio message player ──────────────────────────────────────────────────────
-function AudioPlayer({ blob, transcription }) {
+// ── Audio player (user voice messages + bot voice-only) ───────────────────────
+function AudioPlayer({ blob, transcription, autoPlay = false }) {
   const [playing, setPlaying] = useState(false)
   const [progress, setProgress] = useState(0)
   const [duration, setDuration] = useState(0)
   const audioRef = useRef()
   const url = useMemo(() => URL.createObjectURL(blob), [blob])
   useEffect(() => () => URL.revokeObjectURL(url), [url])
+  useEffect(() => { if (autoPlay && audioRef.current) { audioRef.current.play().catch(() => {}); setPlaying(true) } }, [autoPlay])
+
   const toggle = () => {
     if (playing) { audioRef.current.pause(); setPlaying(false) }
     else { audioRef.current.play(); setPlaying(true) }
@@ -38,13 +46,13 @@ function AudioPlayer({ blob, transcription }) {
   return (
     <div className="wa-audio-player">
       <audio ref={audioRef} src={url}
-        onTimeUpdate={e => setProgress(e.target.currentTime/e.target.duration*100)}
+        onTimeUpdate={e => setProgress(e.target.currentTime / e.target.duration * 100)}
         onLoadedMetadata={e => setDuration(e.target.duration)}
         onEnded={() => { setPlaying(false); setProgress(0) }} />
       <button className="wa-audio-btn" onClick={toggle}>{playing ? '⏸' : '▶'}</button>
       <div className="wa-audio-track">
         <div className="wa-audio-progress" style={{width:`${progress}%`}} />
-        <WaveformBars count={24} />
+        <WaveformBars count={24} playing={playing} />
       </div>
       <span className="wa-audio-dur">{formatDuration(duration)}</span>
       {transcription && <div className="wa-audio-transcript">"{transcription}"</div>}
@@ -56,36 +64,58 @@ function AudioPlayer({ blob, transcription }) {
 function KokoroBanner({ pct }) {
   if (pct >= 100) return null
   return (
-    <div style={{
-      padding:'6px 16px', background:'#f0fdf4', borderBottom:'1px solid #bbf7d0',
-      fontSize:'12px', color:'#166534', display:'flex', alignItems:'center', gap:10
-    }}>
+    <div style={{padding:'6px 16px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0',fontSize:'12px',color:'#166534',display:'flex',alignItems:'center',gap:10}}>
       <span>🤖 Chargement voix IA (Kokoro)</span>
-      <div style={{flex:1, height:6, background:'#dcfce7', borderRadius:3, overflow:'hidden'}}>
-        <div style={{width:`${pct}%`, height:'100%', background:'#16a34a', transition:'width .3s'}} />
+      <div style={{flex:1,height:6,background:'#dcfce7',borderRadius:3,overflow:'hidden'}}>
+        <div style={{width:`${pct}%`,height:'100%',background:'#16a34a',transition:'width .3s'}} />
       </div>
-      <span style={{minWidth:36, textAlign:'right'}}>{pct}%</span>
+      <span style={{minWidth:36,textAlign:'right'}}>{pct}%</span>
     </div>
   )
 }
 
 // ── Single chat message ───────────────────────────────────────────────────────
-function WaMessage({ msg, onPlayTTS, ttsPlaying }) {
-  const { role, content, audioBlob, transcription, feedback, timestamp } = msg
+function WaMessage({ msg, msgIndex, autoTTS, onPlayTTS, onRevealTranscription, ttsPlaying }) {
+  const { role, content, audioBlob, transcription, isVoiceOnly, transcriptionRevealed, feedback, timestamp } = msg
   if (role === 'system') return <div className="wa-system"><span>{content}</span></div>
   const isUser = role === 'user'
+
   return (
     <div className={`wa-row ${isUser ? 'wa-row-user' : 'wa-row-bot'}`}>
       {!isUser && <div className="wa-avatar">🎭</div>}
       <div className={`wa-bubble ${isUser ? 'wa-bubble-user' : 'wa-bubble-bot'}`}>
-        {audioBlob
-          ? <AudioPlayer blob={audioBlob} transcription={transcription} />
-          : <div className="wa-text">{content}</div>
-        }
+
+        {/* User voice message */}
+        {isUser && audioBlob && <AudioPlayer blob={audioBlob} transcription={transcription} />}
+
+        {/* User text */}
+        {isUser && !audioBlob && <div className="wa-text">{content}</div>}
+
+        {/* Bot voice-only message */}
+        {!isUser && isVoiceOnly && audioBlob && (
+          <div>
+            <AudioPlayer blob={audioBlob} autoPlay={autoTTS} />
+            {!transcriptionRevealed
+              ? <button className="wa-transcription-btn" onClick={() => onRevealTranscription(msgIndex)}>
+                  📜 Voir la transcription <span className="wa-penalty">−{TRANSCRIPTION_PENALTY} pts</span>
+                </button>
+              : <div className="wa-revealed-text">
+                  <em>{content}</em>
+                  <span className="wa-revealed-label">📜 −{TRANSCRIPTION_PENALTY} pts</span>
+                </div>
+            }
+          </div>
+        )}
+
+        {/* Bot text message */}
+        {!isUser && !isVoiceOnly && (
+          <div className="wa-text">{content}</div>
+        )}
+
         <div className="wa-meta">
           <span className="wa-time">{formatTime(timestamp)}</span>
           {isUser && <span className="wa-tick">✓✓</span>}
-          {!isUser && content && (
+          {!isUser && !isVoiceOnly && content && (
             <button className={`wa-tts-btn ${ttsPlaying ? 'active' : ''}`}
               onClick={() => onPlayTTS(content)} title="Écouter">
               {ttsPlaying ? '🔊' : '🔈'}
@@ -102,41 +132,39 @@ function WaMessage({ msg, onPlayTTS, ttsPlaying }) {
 export default function GameView({ config, settings, onEnd }) {
   const { scenario, difficulty, language } = config
   const criteria = scenario.scoringCriteria
-  const ttsOpts = scenario.ttsOptions || { rate:0.9, pitch:1.0, gender:undefined }
+  const ttsOpts  = scenario.ttsOptions || { rate:0.9, pitch:1.0, gender:undefined }
 
-  const [messages, setMessages] = useState([])
-  const [apiHistory, setApiHistory] = useState([])
-  const [score, setScore] = useState(0)
-  const [usedWords, setUsedWords] = useState(new Set())
-  const [scoreLog, setScoreLog] = useState([])
-  const [inputText, setInputText] = useState('')
-  const [isThinking, setIsThinking] = useState(false)
-  const [isRecording, setIsRecording] = useState(false)
-  const [recorderRef, setRecorderRef] = useState(null)
-  const [gameOver, setGameOver] = useState(false)
-  const [toast, setToast] = useState(null)
-  const [error, setError] = useState(null)
+  const [messages, setMessages]         = useState([])
+  const [apiHistory, setApiHistory]     = useState([])
+  const [score, setScore]               = useState(0)
+  const [usedWords, setUsedWords]       = useState(new Set())
+  const [scoreLog, setScoreLog]         = useState([])
+  const [inputText, setInputText]       = useState('')
+  const [isThinking, setIsThinking]     = useState(false)
+  const [isRecording, setIsRecording]   = useState(false)
+  const [recorderRef, setRecorderRef]   = useState(null)
+  const [gameOver, setGameOver]         = useState(false)
+  const [toast, setToast]               = useState(null)
+  const [error, setError]               = useState(null)
   const [micAvailable, setMicAvailable] = useState(false)
-  const [turnCount, setTurnCount] = useState(0)
+  const [turnCount, setTurnCount]       = useState(0)
   const [showResources, setShowResources] = useState(false)
   const [ttsPlayingId, setTtsPlayingId] = useState(null)
-  const [autoTTS, setAutoTTS] = useState(true)
+  const [autoTTS, setAutoTTS]           = useState(true)
   const [openingReady, setOpeningReady] = useState(false)
-  const [kokoroPct, setKokoroPct] = useState(isKokoroReady() ? 100 : 0)
+  const [kokoroPct, setKokoroPct]       = useState(isKokoroReady() ? 100 : 0)
 
   const messagesEndRef = useRef(null)
-  const textareaRef = useRef(null)
-  const systemPrompt = useRef(buildSystemPrompt(scenario, difficulty, language))
-  const toastTimer = useRef(null)
+  const textareaRef    = useRef(null)
+  const systemPrompt   = useRef(buildSystemPrompt(scenario, difficulty, language))
+  const toastTimer     = useRef(null)
 
-  // Pre-warm Kokoro model in background
+  // Pre-warm Kokoro in worker background
   useEffect(() => {
-    if (!isKokoroReady()) {
-      initKokoro((pct) => setKokoroPct(pct))
-    }
+    if (!isKokoroReady()) initKokoro((pct) => setKokoroPct(pct))
   }, [])
 
-  // Initialise chat: translate opening phrase, then speak it
+  // Translate opening phrase & display first message
   useEffect(() => {
     let cancelled = false
     async function init() {
@@ -144,10 +172,10 @@ export default function GameView({ config, settings, onEnd }) {
       let opening = scenario.openingPhrase
       if (language !== 'Français' && settings.anthropicKey) {
         try { opening = await getLocalizedOpening(settings.anthropicKey, scenario.openingPhrase, language) }
-        catch { /* keep original */ }
+        catch {}
       }
       if (cancelled) return
-      setMessages([{ role:'assistant', content:opening, timestamp:Date.now() }])
+      setMessages([{ role:'assistant', content:opening, isVoiceOnly:false, timestamp:Date.now() }])
       setApiHistory([{ role:'assistant', content:opening }])
       setOpeningReady(true)
       setTimeout(() => speak(opening, language, ttsOpts, settings.openaiKey), 300)
@@ -171,6 +199,13 @@ export default function GameView({ config, settings, onEnd }) {
     speak(text, language, ttsOpts, settings.openaiKey).then(() => setTtsPlayingId(null))
   }, [ttsPlayingId, language, ttsOpts, settings.openaiKey])
 
+  const handleRevealTranscription = useCallback((msgIndex) => {
+    setMessages(prev => prev.map((m, i) => i === msgIndex ? { ...m, transcriptionRevealed: true } : m))
+    setScore(prev => Math.max(0, prev - TRANSCRIPTION_PENALTY))
+    setScoreLog(prev => [...prev, { label: 'Transcription demandée', points: -TRANSCRIPTION_PENALTY, emoji: '📜' }])
+    showToast(`−${TRANSCRIPTION_PENALTY} pts (transcription)`)
+  }, [])
+
   const handleSend = useCallback(async (text, audioBlob = null, transcription = null) => {
     const trimmed = (text || '').trim()
     if (!trimmed || isThinking || gameOver) return
@@ -184,9 +219,27 @@ export default function GameView({ config, settings, onEnd }) {
     const newHistory = [...apiHistory, { role:'user', content:trimmed }]
 
     try {
-      const reply = await sendMessage(settings.anthropicKey, systemPrompt.current, newHistory, trimmed)
+      const reply   = await sendMessage(settings.anthropicKey, systemPrompt.current, newHistory, trimmed)
       const botText = reply.message || '...'
-      const botMsg = { role:'assistant', content:botText, feedback:reply.feedback, timestamp:Date.now() }
+
+      // Decide voice-only based on difficulty
+      const canVoiceOnly = !!(settings.openaiKey || isKokoroReady())
+      const makeVoiceOnly = canVoiceOnly && (Math.random() < (VOICE_ONLY_PROBA[difficulty] || 0))
+
+      let voiceBlob = null
+      if (makeVoiceOnly) {
+        voiceBlob = await generateAudioBlob(botText, language, ttsOpts, settings.openaiKey)
+      }
+
+      const botMsg = {
+        role: 'assistant',
+        content: botText,
+        isVoiceOnly: makeVoiceOnly && !!voiceBlob,
+        audioBlob: voiceBlob,
+        transcriptionRevealed: false,
+        feedback: reply.feedback,
+        timestamp: Date.now(),
+      }
       setMessages(prev => [...prev, botMsg])
       setApiHistory([...newHistory, { role:'assistant', content:botText }])
 
@@ -198,7 +251,8 @@ export default function GameView({ config, settings, onEnd }) {
         if (pointsThisTurn > 0) showToast(`+${pointsThisTurn} pts !`)
       }
 
-      if (autoTTS) {
+      // Audio: voice-only messages auto-play via AudioPlayer; text messages use speak()
+      if (autoTTS && !botMsg.isVoiceOnly) {
         setTtsPlayingId(botText.slice(0,20))
         speak(botText, language, ttsOpts, settings.openaiKey).then(() => setTtsPlayingId(null))
       }
@@ -211,7 +265,7 @@ export default function GameView({ config, settings, onEnd }) {
       setIsThinking(false)
       setTimeout(() => textareaRef.current?.focus(), 100)
     }
-  }, [apiHistory, score, usedWords, isThinking, gameOver, settings, criteria, turnCount, autoTTS, language, ttsOpts])
+  }, [apiHistory, score, usedWords, isThinking, gameOver, settings, criteria, turnCount, autoTTS, language, ttsOpts, difficulty])
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(inputText) }
@@ -235,11 +289,10 @@ export default function GameView({ config, settings, onEnd }) {
   }
 
   const canUseOral = (scenario.interactionMode==='oral'||scenario.interactionMode==='both') && micAvailable
-  const vocabList = criteria.vocabularyList || []
+  const vocabList  = criteria.vocabularyList || []
 
   return (
     <div className="game-wrapper">
-
       {/* ── Top bar ── */}
       <div className="wa-header">
         <div className="wa-header-left">
@@ -256,7 +309,7 @@ export default function GameView({ config, settings, onEnd }) {
           </div>
           <button className={`wa-icon-btn ${autoTTS?'active':''}`}
             onClick={() => { setAutoTTS(!autoTTS); if(autoTTS) stopSpeaking() }}
-            title={autoTTS?"Couper l'audio":"Activer l'audio"}>
+            title={autoTTS ? "Couper l'audio" : "Activer l'audio"}>
             {autoTTS ? '🔊' : '🔇'}
           </button>
           <button className="wa-icon-btn" onClick={() => setShowResources(!showResources)} title="Ressources">📚</button>
@@ -288,7 +341,6 @@ export default function GameView({ config, settings, onEnd }) {
 
       {/* ── Body ── */}
       <div className="game-body">
-
         {/* ── Side panel ── */}
         <div className="game-side-panel">
           <div className="side-panel-section">
@@ -299,7 +351,11 @@ export default function GameView({ config, settings, onEnd }) {
             <div className="side-panel-title">🏆 Score : {score} pts</div>
             <div className="score-log">
               {scoreLog.slice(-8).reverse().map((item,i) => (
-                <div className="score-log-item" key={i}><span>{item.emoji} {item.label}</span><span className="pts">+{item.points}</span></div>
+                <div className="score-log-item" key={i}
+                  style={{color: item.points < 0 ? '#ef4444' : 'inherit'}}>
+                  <span>{item.emoji} {item.label}</span>
+                  <span className="pts">{item.points > 0 ? '+' : ''}{item.points}</span>
+                </div>
               ))}
               {scoreLog.length === 0 && <div style={{fontSize:'var(--fz-xs)',color:'var(--c-text-muted)'}}>Les points s'afficheront ici…</div>}
             </div>
@@ -324,6 +380,9 @@ export default function GameView({ config, settings, onEnd }) {
                   <span>{e} {l}</span><span style={{fontWeight:700}}>+{p}</span>
                 </div>
               ))}
+              <div style={{display:'flex',justifyContent:'space-between',color:'#ef4444',marginTop:2,borderTop:'1px solid #fee2e2',paddingTop:4}}>
+                <span>📜 Transcription</span><span style={{fontWeight:700}}>−{TRANSCRIPTION_PENALTY}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -337,24 +396,22 @@ export default function GameView({ config, settings, onEnd }) {
                 <div className="wa-row wa-row-bot">
                   <div className="wa-avatar">🎭</div>
                   <div className="wa-bubble wa-bubble-bot">
-                    <div className="typing-indicator">
-                      <div className="typing-dot"/><div className="typing-dot"/><div className="typing-dot"/>
-                    </div>
+                    <div className="typing-indicator"><div className="typing-dot"/><div className="typing-dot"/><div className="typing-dot"/></div>
                   </div>
                 </div>
               )}
               {messages.map((msg, i) => (
-                <WaMessage key={i} msg={msg}
+                <WaMessage key={i} msg={msg} msgIndex={i}
+                  autoTTS={autoTTS}
                   onPlayTTS={handlePlayTTS}
+                  onRevealTranscription={handleRevealTranscription}
                   ttsPlaying={ttsPlayingId === msg.content?.slice(0,20)} />
               ))}
               {isThinking && (
                 <div className="wa-row wa-row-bot">
                   <div className="wa-avatar">🎭</div>
                   <div className="wa-bubble wa-bubble-bot">
-                    <div className="typing-indicator">
-                      <div className="typing-dot"/><div className="typing-dot"/><div className="typing-dot"/>
-                    </div>
+                    <div className="typing-indicator"><div className="typing-dot"/><div className="typing-dot"/><div className="typing-dot"/></div>
                   </div>
                 </div>
               )}
@@ -368,7 +425,6 @@ export default function GameView({ config, settings, onEnd }) {
             </div>
           )}
 
-          {/* ── Input bar ── */}
           <div className="wa-input-bar">
             {canUseOral && (
               <button className={`wa-input-btn ${isRecording?'recording':''}`}
