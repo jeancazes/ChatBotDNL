@@ -240,3 +240,17 @@ a{color:var(--c-teacher);text-decoration:none}a:hover{text-decoration:underline}
 .wa-send-btn{width:42px;height:42px;border-radius:50%;background:#25d366;border:none;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;transition:background .15s;box-shadow:0 2px 6px rgba(37,211,102,.4)}
 .wa-send-btn:hover:not(:disabled){background:#1da851}
 .wa-send-btn:disabled{background:#ccc;box-shadow:none}
+
+/* Voice-only bot message — transcription button & revealed text */
+.wa-transcription-btn{display:block;width:100%;margin-top:8px;padding:6px 12px;background:#fff8e1;border:1px dashed #f59e0b;border-radius:12px;font-size:12px;color:#92400e;cursor:pointer;text-align:center;transition:background .15s}
+.wa-transcription-btn:hover{background:#fef3c7}
+.wa-penalty{font-weight:700;color:#dc2626;margin-left:4px}
+.wa-revealed-text{margin-top:8px;padding:6px 10px;background:#f9fafb;border-radius:8px;font-size:12px;color:#6b7280;display:flex;flex-direction:column;gap:2px;border-left:3px solid #fbbf24}
+.wa-revealed-label{font-size:10px;color:#dc2626;font-weight:600}
+
+/* Waveform animation when playing */
+@keyframes wa-bar-bounce {
+  0%,100%{transform:scaleY(1)}
+  50%{transform:scaleY(1.8)}
+}
+.wa-waveform-bar--playing{animation:wa-bar-bounce .6s ease-in-out infinite;transform-origin:center}
