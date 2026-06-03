@@ -218,3 +218,47 @@ export async function speak(text, language, opts = {}, openaiKey = null) {
   if (blob) return playBlob(blob)
   return speakWebSpeech(text, language, opts)
 }
+
+// ─── Sentence streaming (reduces perceived latency) ───────────────────────────
+
+/**
+ * Split text into sentences for streaming TTS.
+ * Splits on .!? followed by space + uppercase, avoiding abbreviations.
+ */
+export function splitSentences(text) {
+  if (!text) return []
+  // Split on sentence-ending punctuation before uppercase letter or opening quote
+  const parts = text.split(/(?<=[.!?…])\s+(?=[A-ZÁÀÂÉÈÊËÎÏÔÙÛÜÇ«"'])/u)
+  const result = parts.map(s => s.trim()).filter(s => s.length > 2)
+  return result.length > 0 ? result : [text.trim()]
+}
+
+/**
+ * Speak text sentence by sentence: play sentence N while sentence N+1 generates.
+ * Dramatically reduces time-to-first-audio for long responses.
+ */
+export async function speakStreaming(text, language, opts = {}, openaiKey = null) {
+  if (!text) return
+  stopSpeaking()
+  const sentences = splitSentences(text)
+  if (sentences.length <= 1) {
+    // Single sentence — use regular speak()
+    const blob = await generateAudioBlob(text, language, opts, openaiKey)
+    if (blob) return playBlob(blob)
+    return speakWebSpeech(text, language, opts)
+  }
+
+  // Pipeline: generate[n+1] runs while play[n] is happening
+  let nextBlobPromise = generateAudioBlob(sentences[0], language, opts, openaiKey)
+
+  for (let i = 0; i < sentences.length; i++) {
+    const blob = await nextBlobPromise
+    // Start generating next sentence immediately (don't await)
+    if (i + 1 < sentences.length) {
+      nextBlobPromise = generateAudioBlob(sentences[i + 1], language, opts, openaiKey)
+    }
+    // Play current sentence (awaited so we stay in sync)
+    if (blob) await playBlob(blob)
+    else await speakWebSpeech(sentences[i], language, opts)
+  }
+}

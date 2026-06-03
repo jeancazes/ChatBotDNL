@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { buildSystemPrompt, sendMessage, calculateScore, getLocalizedOpening } from '../utils/claude'
 import { transcribeAudio, startRecording, checkMicrophoneAvailable, initWhisper, isWhisperReady } from '../utils/whisper'
-import { speak, stopSpeaking, generateAudioBlob, playBlob, initKokoro, isKokoroReady } from '../utils/tts'
+import { speak, speakStreaming, splitSentences, stopSpeaking, generateAudioBlob, playBlob, initKokoro, isKokoroReady } from '../utils/tts'
 
 const DIFF_LABELS = ['','🌱','🌿','⚡','🔥','💎']
 const TRANSCRIPTION_PENALTY = 5
@@ -30,7 +30,7 @@ function WaveformBars({ count = 32, playing = false }) {
 }
 
 // ── Audio player (user voice messages + bot voice-only) ───────────────────────
-function AudioPlayer({ blob, transcription, autoPlay = false }) {
+function AudioPlayer({ blob, transcription, autoPlay = false, onEnded }) {
   const [playing, setPlaying] = useState(false)
   const [progress, setProgress] = useState(0)
   const [duration, setDuration] = useState(0)
@@ -48,7 +48,7 @@ function AudioPlayer({ blob, transcription, autoPlay = false }) {
       <audio ref={audioRef} src={url}
         onTimeUpdate={e => setProgress(e.target.currentTime / e.target.duration * 100)}
         onLoadedMetadata={e => setDuration(e.target.duration)}
-        onEnded={() => { setPlaying(false); setProgress(0) }} />
+        onEnded={() => { setPlaying(false); setProgress(0); onEnded?.() }} />
       <button className="wa-audio-btn" onClick={toggle}>{playing ? '⏸' : '▶'}</button>
       <div className="wa-audio-track">
         <div className="wa-audio-progress" style={{width:`${progress}%`}} />
@@ -83,7 +83,7 @@ function ModelsBanner({ kokoroPct, whisperPct }) {
 }
 
 // ── Single chat message ───────────────────────────────────────────────────────
-function WaMessage({ msg, msgIndex, autoTTS, onPlayTTS, onRevealTranscription, ttsPlaying }) {
+function WaMessage({ msg, msgIndex, autoTTS, onPlayTTS, onRevealTranscription, ttsPlaying, onAudioEnded }) {
   const { role, content, audioBlob, transcription, isVoiceOnly, transcriptionRevealed, feedback, timestamp } = msg
   if (role === 'system') return <div className="wa-system"><span>{content}</span></div>
   const isUser = role === 'user'
@@ -102,7 +102,7 @@ function WaMessage({ msg, msgIndex, autoTTS, onPlayTTS, onRevealTranscription, t
         {/* Bot voice-only message */}
         {!isUser && isVoiceOnly && audioBlob && (
           <div>
-            <AudioPlayer blob={audioBlob} autoPlay={autoTTS} />
+            <AudioPlayer blob={audioBlob} autoPlay={autoTTS} onEnded={onAudioEnded} />
             {!transcriptionRevealed
               ? <button className="wa-transcription-btn" onClick={() => onRevealTranscription(msgIndex)}>
                   📜 Voir la transcription <span className="wa-penalty">−{TRANSCRIPTION_PENALTY} pts</span>
@@ -188,7 +188,7 @@ export default function GameView({ config, settings, onEnd }) {
       setMessages([{ role:'assistant', content:opening, isVoiceOnly:false, timestamp:Date.now() }])
       setApiHistory([{ role:'assistant', content:opening }])
       setOpeningReady(true)
-      setTimeout(() => speak(opening, language, ttsOpts, settings.openaiKey), 300)
+      setTimeout(() => speakStreaming(opening, language, ttsOpts, settings.openaiKey), 300)
     }
     init()
     return () => { cancelled = true; stopSpeaking() }
@@ -206,7 +206,7 @@ export default function GameView({ config, settings, onEnd }) {
     const id = text.slice(0,20)
     if (ttsPlayingId === id) { stopSpeaking(); setTtsPlayingId(null); return }
     setTtsPlayingId(id)
-    speak(text, language, ttsOpts, settings.openaiKey).then(() => setTtsPlayingId(null))
+    speakStreaming(text, language, ttsOpts, settings.openaiKey).then(() => setTtsPlayingId(null))
   }, [ttsPlayingId, language, ttsOpts, settings.openaiKey])
 
   const handleRevealTranscription = useCallback((msgIndex) => {
@@ -236,9 +236,14 @@ export default function GameView({ config, settings, onEnd }) {
       const canVoiceOnly = !!(settings.openaiKey || isKokoroReady())
       const makeVoiceOnly = canVoiceOnly && (Math.random() < (VOICE_ONLY_PROBA[difficulty] || 0))
 
+      // Voice-only: generate only the FIRST sentence for fast display,
+      // remaining sentences play via onAudioEnded callback in AudioPlayer.
       let voiceBlob = null
+      let voiceRemaining = ''
       if (makeVoiceOnly) {
-        voiceBlob = await generateAudioBlob(botText, language, ttsOpts, settings.openaiKey)
+        const sentences = splitSentences(botText)
+        voiceBlob = await generateAudioBlob(sentences[0], language, ttsOpts, settings.openaiKey)
+        voiceRemaining = sentences.slice(1).join(' ')
       }
 
       const botMsg = {
@@ -246,6 +251,7 @@ export default function GameView({ config, settings, onEnd }) {
         content: botText,
         isVoiceOnly: makeVoiceOnly && !!voiceBlob,
         audioBlob: voiceBlob,
+        remainingText: voiceRemaining,
         transcriptionRevealed: false,
         feedback: reply.feedback,
         timestamp: Date.now(),
@@ -264,7 +270,7 @@ export default function GameView({ config, settings, onEnd }) {
       // Audio: voice-only messages auto-play via AudioPlayer; text messages use speak()
       if (autoTTS && !botMsg.isVoiceOnly) {
         setTtsPlayingId(botText.slice(0,20))
-        speak(botText, language, ttsOpts, settings.openaiKey).then(() => setTtsPlayingId(null))
+        speakStreaming(botText, language, ttsOpts, settings.openaiKey).then(() => setTtsPlayingId(null))
       }
 
       if (reply.scoring?.objective_reached) setTimeout(() => setGameOver(true), 800)
@@ -415,7 +421,10 @@ export default function GameView({ config, settings, onEnd }) {
                   autoTTS={autoTTS}
                   onPlayTTS={handlePlayTTS}
                   onRevealTranscription={handleRevealTranscription}
-                  ttsPlaying={ttsPlayingId === msg.content?.slice(0,20)} />
+                  ttsPlaying={ttsPlayingId === msg.content?.slice(0,20)}
+                  onAudioEnded={msg.remainingText
+                    ? () => speakStreaming(msg.remainingText, language, ttsOpts, settings.openaiKey)
+                    : undefined} />
               ))}
               {isThinking && (
                 <div className="wa-row wa-row-bot">
