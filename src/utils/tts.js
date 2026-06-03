@@ -2,129 +2,100 @@
  * Text-to-Speech — three-tier system
  *
  * 1. Kokoro TTS  — free, runs in-browser via ONNX WASM (~80 MB, cached after first load)
- *                  Used for English (best quality). Also attempted for FR if no OpenAI key.
+ *                  Used for English & Spanish (excellent quality).
  * 2. OpenAI TTS  — tts-1-hd, paid per character, excellent for all languages
- *                  Used for FR / ES / DE as primary, and EN as fallback if Kokoro fails.
- * 3. Web Speech  — browser built-in, free, quality varies by OS
- *                  Last resort fallback.
+ *                  Primary for FR/DE, fallback for EN/ES.
+ * 3. Web Speech  — browser built-in, free, quality varies by OS. Last resort.
  */
 
 // ─── Kokoro ────────────────────────────────────────────────────────────────────
-
-// Voices available in Kokoro 82M v1.0
-// EN-US: af_heart af_alloy af_aoede af_bella af_jessica af_kore af_nicole af_nova
-//        af_river af_sarah af_sky am_adam am_echo am_eric am_fenrir am_liam am_michael am_onyx am_puck am_santa
-// EN-GB: bf_alice bf_emma bf_isabella bf_lily bm_daniel bm_fable bm_george bm_lewis bm_liam
-// FR:    ff_siwis
-// ES:    ef_dora em_alex em_santa
-// ZH/JA/KO/HI: various
+// Available voices shipped with kokoro-js 1.x:
+// EN-US female: af_heart af_alloy af_aoede af_bella af_jessica af_kore af_nicole af_nova af_river af_sarah af_sky
+// EN-US male:   am_adam am_echo am_eric am_fenrir am_liam am_michael am_onyx am_puck am_santa
+// EN-GB female: bf_alice bf_emma bf_isabella bf_lily
+// EN-GB male:   bm_daniel bm_fable bm_george bm_lewis
+// FR female:    ff_siwis
+// ES female:    ef_dora  ES male: em_alex em_santa
 
 const KOKORO_VOICES = {
-  English: {
-    male:    ['bm_george', 'bm_lewis', 'am_michael', 'am_echo'],
-    female:  ['bf_emma',   'af_sarah',  'af_nicole',  'af_heart'],
-    neutral: 'am_puck',
-  },
-  Français: {
-    male:    ['ff_siwis'],   // no male FR voice in v1.0 — will fallback to OpenAI
-    female:  ['ff_siwis'],
-    neutral: 'ff_siwis',
-  },
-  Español: {
-    male:    ['em_alex'],
-    female:  ['ef_dora'],
-    neutral: 'ef_dora',
-  },
-  Deutsch: null,  // no DE voice in v1.0 — always use OpenAI/WebSpeech
+  English: { male: 'bm_george', female: 'bf_emma'  },
+  Español: { male: 'em_alex',   female: 'ef_dora'  },
+  Français:{ male: 'ff_siwis',  female: 'ff_siwis' }, // limited — used only when no OpenAI key
+  Deutsch: null, // no DE voice — always fallback
 }
 
-// Languages where Kokoro has good quality coverage
+// Languages where Kokoro has strong coverage
 const KOKORO_GOOD_LANGS = new Set(['English', 'Español'])
 
-let _kokoroTTS   = null   // KokoroTTS instance once loaded
+let _kokoroTTS   = null
 let _kokoroState = 'idle' // 'idle' | 'loading' | 'ready' | 'error'
-let _kokoroQueue = []     // pending init promises
+let _kokoroQueue = []
 
 /**
- * Kick off Kokoro model download & initialisation.
- * Call this early (e.g. on game mount) to pre-warm the model.
- * @param {(pct: number, status: string) => void} onProgress
+ * Pre-warm Kokoro model (downloads ~80 MB on first use, then cached).
+ * Call early (game mount) so the model is ready when the student speaks.
+ * @param {(pct: number) => void} onProgress  — 0..100
  */
 export async function initKokoro(onProgress) {
-  if (_kokoroState === 'ready') { onProgress?.(100, 'ready'); return true }
-  if (_kokoroState === 'error') return false
+  if (_kokoroState === 'ready')   { onProgress?.(100); return true  }
+  if (_kokoroState === 'error')   { return false }
   if (_kokoroState === 'loading') {
-    // Already loading — wait for it
     return new Promise(resolve => _kokoroQueue.push(resolve))
   }
-
   _kokoroState = 'loading'
-  onProgress?.(0, 'loading')
-
+  onProgress?.(0)
   try {
     const { KokoroTTS } = await import('kokoro-js')
-    _kokoroTTS = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0', {
+    _kokoroTTS = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
       dtype: 'q8',
+      device: 'wasm',
       progress_callback: (info) => {
         if (info.status === 'progress' && info.total) {
-          const pct = Math.round((info.loaded / info.total) * 100)
-          onProgress?.(pct, 'loading')
+          onProgress?.(Math.round((info.loaded / info.total) * 100))
         }
       },
     })
     _kokoroState = 'ready'
-    onProgress?.(100, 'ready')
-    _kokoroQueue.forEach(resolve => resolve(true))
-    _kokoroQueue = []
+    onProgress?.(100)
+    _kokoroQueue.forEach(r => r(true)); _kokoroQueue = []
     return true
   } catch (err) {
     console.warn('Kokoro init failed:', err)
     _kokoroState = 'error'
-    _kokoroQueue.forEach(resolve => resolve(false))
-    _kokoroQueue = []
+    _kokoroQueue.forEach(r => r(false)); _kokoroQueue = []
     return false
   }
 }
 
-/** Pick best Kokoro voice for this language + gender + optional override */
+export function isKokoroReady()   { return _kokoroState === 'ready'   }
+export function isKokoroLoading() { return _kokoroState === 'loading' }
+
 function pickKokoroVoice(language, opts) {
   if (opts.kokoroVoice) return opts.kokoroVoice
   const map = KOKORO_VOICES[language]
   if (!map) return null
-  if (opts.gender === 'male')   return map.male?.[0]   ?? map.neutral
-  if (opts.gender === 'female') return map.female?.[0] ?? map.neutral
-  return map.neutral
+  return opts.gender === 'female' ? map.female : map.male
 }
 
-/** Convert Float32Array PCM → playable AudioBuffer */
-async function playPCM(samples, sampleRate) {
-  const ctx = new (window.AudioContext || window.webkitAudioContext)()
-  const buffer = ctx.createBuffer(1, samples.length, sampleRate)
-  buffer.copyToChannel(samples, 0)
-  return new Promise((resolve) => {
-    const src = ctx.createBufferSource()
-    src.buffer = buffer
-    src.connect(ctx.destination)
-    src.onended = () => { ctx.close(); resolve(true) }
-    src.start()
-    _currentKokoroSrc = src
-    _currentKokoroCtx = ctx
-  })
-}
-
-let _currentKokoroSrc = null
-let _currentKokoroCtx = null
+let _currentKokoroAudio = null
 
 async function speakKokoro(text, language, opts) {
   if (_kokoroState !== 'ready' || !_kokoroTTS) return false
   const voice = pickKokoroVoice(language, opts)
   if (!voice) return false
-
   stopKokoro()
   try {
     const audio = await _kokoroTTS.generate(text, { voice, speed: opts.rate ?? 1.0 })
-    // audio.audio = Float32Array, audio.sampling_rate = number
-    return await playPCM(audio.audio, audio.sampling_rate)
+    // audio.toBlob() → WAV Blob (audio.audio = Float32Array, audio.sampling_rate = 24000)
+    const blob = audio.toBlob()
+    const url  = URL.createObjectURL(blob)
+    return new Promise((resolve) => {
+      const a = new Audio(url)
+      _currentKokoroAudio = a
+      a.onended  = () => { URL.revokeObjectURL(url); _currentKokoroAudio = null; resolve(true)  }
+      a.onerror  = () => { URL.revokeObjectURL(url); _currentKokoroAudio = null; resolve(false) }
+      a.play()
+    })
   } catch (err) {
     console.warn('Kokoro generate failed:', err)
     return false
@@ -132,14 +103,10 @@ async function speakKokoro(text, language, opts) {
 }
 
 function stopKokoro() {
-  try { _currentKokoroSrc?.stop() } catch {}
-  try { _currentKokoroCtx?.close() } catch {}
-  _currentKokoroSrc = null
-  _currentKokoroCtx = null
+  if (_currentKokoroAudio) { _currentKokoroAudio.pause(); _currentKokoroAudio = null }
 }
 
 // ─── OpenAI TTS ────────────────────────────────────────────────────────────────
-
 const OPENAI_VOICES = {
   Français: { male: 'onyx',  female: 'nova'    },
   English:  { male: 'echo',  female: 'shimmer' },
@@ -169,13 +136,13 @@ async function speakOpenAI(text, language, opts, openaiKey) {
     throw new Error(err.error?.message || `OpenAI TTS ${resp.status}`)
   }
   const blob = await resp.blob()
-  const url = URL.createObjectURL(blob)
+  const url  = URL.createObjectURL(blob)
   return new Promise((resolve) => {
-    const audio = new Audio(url)
-    _currentOpenAIAudio = audio
-    audio.onended  = () => { URL.revokeObjectURL(url); _currentOpenAIAudio = null; resolve(true)  }
-    audio.onerror  = () => { URL.revokeObjectURL(url); _currentOpenAIAudio = null; resolve(false) }
-    audio.play()
+    const a = new Audio(url)
+    _currentOpenAIAudio = a
+    a.onended  = () => { URL.revokeObjectURL(url); _currentOpenAIAudio = null; resolve(true)  }
+    a.onerror  = () => { URL.revokeObjectURL(url); _currentOpenAIAudio = null; resolve(false) }
+    a.play()
   })
 }
 
@@ -184,7 +151,6 @@ function stopOpenAI() {
 }
 
 // ─── Web Speech fallback ───────────────────────────────────────────────────────
-
 let _wsTimer = null
 const FEMALE_NAMES = ['marie','amélie','alice','julie','sarah','karen','moira','tessa','fiona','veena']
 const MALE_NAMES   = ['thomas','nicolas','pierre','daniel','fred','jorge','markus','hans']
@@ -195,12 +161,12 @@ function speakWebSpeech(text, language, opts) {
   return new Promise((resolve) => {
     const u = new SpeechSynthesisUtterance(text)
     const langMap = { Français:'fr-FR', English:'en-GB', Español:'es-ES', Deutsch:'de-DE' }
-    u.lang   = langMap[language] || 'en-GB'
-    u.rate   = opts.rate  ?? 0.9
-    u.pitch  = opts.pitch ?? 1.0
-    const assignAndSpeak = () => {
+    u.lang  = langMap[language] || 'en-GB'
+    u.rate  = opts.rate  ?? 0.9
+    u.pitch = opts.pitch ?? 1.0
+    const go = () => {
       const voices = (window.speechSynthesis.getVoices() || []).filter(v => v.lang.startsWith(u.lang.slice(0,2)))
-      const names = opts.gender === 'female' ? FEMALE_NAMES : MALE_NAMES
+      const names  = opts.gender === 'female' ? FEMALE_NAMES : MALE_NAMES
       const v = voices.find(v => names.some(n => v.name.toLowerCase().includes(n))) || voices[0]
       if (v) u.voice = v
       clearInterval(_wsTimer)
@@ -212,8 +178,8 @@ function speakWebSpeech(text, language, opts) {
       u.onerror = () => { clearInterval(_wsTimer); resolve(false) }
       window.speechSynthesis.speak(u)
     }
-    if (window.speechSynthesis.getVoices().length > 0) assignAndSpeak()
-    else window.speechSynthesis.onvoiceschanged = assignAndSpeak
+    if (window.speechSynthesis.getVoices().length > 0) go()
+    else window.speechSynthesis.onvoiceschanged = go
   })
 }
 
@@ -222,61 +188,40 @@ function stopWebSpeech() {
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────────
-
 export function stopSpeaking() {
-  stopKokoro()
-  stopOpenAI()
-  stopWebSpeech()
+  stopKokoro(); stopOpenAI(); stopWebSpeech()
 }
 
 export function isSpeaking() {
-  return !!_currentKokoroSrc || !!_currentOpenAIAudio || (window.speechSynthesis?.speaking ?? false)
+  return !!_currentKokoroAudio || !!_currentOpenAIAudio || (window.speechSynthesis?.speaking ?? false)
 }
-
-export function isKokoroReady() { return _kokoroState === 'ready' }
-export function isKokoroLoading() { return _kokoroState === 'loading' }
 
 /**
  * Speak text using the best available engine.
  *
- * Priority:
- *   - English + Español  → Kokoro (if ready) → OpenAI → WebSpeech
- *   - Français + Deutsch → OpenAI (if key)   → Kokoro (FR only) → WebSpeech
- *
- * @param {string} text
- * @param {string} language  'Français' | 'English' | 'Español' | 'Deutsch'
- * @param {{ rate?:number, pitch?:number, gender?:'male'|'female', openaiVoice?:string, kokoroVoice?:string }} opts
- * @param {string|null} openaiKey
+ * English / Español  → Kokoro (if ready) → OpenAI → WebSpeech
+ * Français / Deutsch → OpenAI (if key)   → Kokoro (FR only, limited) → WebSpeech
  */
 export async function speak(text, language, opts = {}, openaiKey = null) {
   if (!text) return false
+  const kokoroFirst = KOKORO_GOOD_LANGS.has(language)
 
-  const useKokoroFirst = KOKORO_GOOD_LANGS.has(language)
-
-  if (useKokoroFirst) {
-    // 1. Try Kokoro
+  if (kokoroFirst) {
     if (_kokoroState === 'ready') {
       const ok = await speakKokoro(text, language, opts)
       if (ok) return true
     }
-    // 2. Try OpenAI
     if (openaiKey) {
-      try { return await speakOpenAI(text, language, opts, openaiKey) }
-      catch (e) { console.warn('OpenAI TTS failed:', e) }
+      try { return await speakOpenAI(text, language, opts, openaiKey) } catch (e) { console.warn('OpenAI TTS:', e) }
     }
   } else {
-    // 1. Try OpenAI
     if (openaiKey) {
-      try { return await speakOpenAI(text, language, opts, openaiKey) }
-      catch (e) { console.warn('OpenAI TTS failed:', e) }
+      try { return await speakOpenAI(text, language, opts, openaiKey) } catch (e) { console.warn('OpenAI TTS:', e) }
     }
-    // 2. Try Kokoro (FR only, limited)
     if (_kokoroState === 'ready' && language === 'Français') {
       const ok = await speakKokoro(text, language, opts)
       if (ok) return true
     }
   }
-
-  // 3. Web Speech fallback
   return speakWebSpeech(text, language, opts)
 }
