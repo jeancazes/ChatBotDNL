@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { buildSystemPrompt, sendMessage, calculateScore } from '../utils/claude'
+import { buildSystemPrompt, sendMessage, calculateScore, getLocalizedOpening } from '../utils/claude'
 import { transcribeAudio, startRecording, checkMicrophoneAvailable } from '../utils/whisper'
 import { speak, stopSpeaking } from '../utils/tts'
 
@@ -108,20 +108,31 @@ export default function GameView({ config, settings, onEnd }) {
   const [showResources, setShowResources] = useState(false)
   const [ttsPlayingId, setTtsPlayingId] = useState(null)
   const [autoTTS, setAutoTTS] = useState(true)
+  const [openingReady, setOpeningReady] = useState(false)
 
   const messagesEndRef = useRef(null)
   const textareaRef = useRef(null)
   const systemPrompt = useRef(buildSystemPrompt(scenario, difficulty, language))
   const toastTimer = useRef(null)
 
+  // Initialise chat: translate opening phrase if needed, then speak it
   useEffect(() => {
-    const opening = { role:'assistant', content:scenario.openingPhrase, timestamp:Date.now() }
-    setMessages([opening])
-    setApiHistory([{ role:'assistant', content:scenario.openingPhrase }])
-    checkMicrophoneAvailable().then(setMicAvailable)
-    // Auto-speak opening
-    setTimeout(() => speak(scenario.openingPhrase, language, ttsOpts), 500)
-    return () => stopSpeaking()
+    let cancelled = false
+    async function init() {
+      checkMicrophoneAvailable().then(setMicAvailable)
+      let opening = scenario.openingPhrase
+      if (language !== 'Français' && settings.anthropicKey) {
+        try { opening = await getLocalizedOpening(settings.anthropicKey, scenario.openingPhrase, language) }
+        catch { /* keep original */ }
+      }
+      if (cancelled) return
+      setMessages([{ role:'assistant', content:opening, timestamp:Date.now() }])
+      setApiHistory([{ role:'assistant', content:opening }])
+      setOpeningReady(true)
+      setTimeout(() => speak(opening, language, ttsOpts, settings.openaiKey), 300)
+    }
+    init()
+    return () => { cancelled = true; stopSpeaking() }
   }, [])
 
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior:'smooth' }) }, [messages, isThinking])
@@ -136,8 +147,8 @@ export default function GameView({ config, settings, onEnd }) {
     const id = text.slice(0,20)
     if (ttsPlayingId === id) { stopSpeaking(); setTtsPlayingId(null); return }
     setTtsPlayingId(id)
-    speak(text, language, ttsOpts).then(() => setTtsPlayingId(null))
-  }, [ttsPlayingId, language, ttsOpts])
+    speak(text, language, ttsOpts, settings.openaiKey).then(() => setTtsPlayingId(null))
+  }, [ttsPlayingId, language, ttsOpts, settings.openaiKey])
 
   const handleSend = useCallback(async (text, audioBlob = null, transcription = null) => {
     const trimmed = (text || '').trim()
@@ -148,37 +159,33 @@ export default function GameView({ config, settings, onEnd }) {
     const turn = turnCount + 1; setTurnCount(turn)
 
     const userMsg = {
-      role:'user', content:trimmed, audioBlob: audioBlob||null,
-      transcription: transcription||null, timestamp:Date.now()
+      role: 'user', content: trimmed, audioBlob, transcription, timestamp: Date.now()
     }
     setMessages(prev => [...prev, userMsg])
-    const apiMsg = { role:'user', content:trimmed }
+    const newHistory = [...apiHistory, { role:'user', content:trimmed }]
 
     try {
-      const result = await sendMessage(settings.anthropicKey, systemPrompt.current, apiHistory, trimmed)
-      const botText = result.message || '...'
-      const scoring = result.scoring || {}
-      const feedback = result.feedback || ''
-      const { newScore, pointsThisTurn, updatedUsedWords, breakdown } =
-        calculateScore(score, criteria, scoring, usedWords)
-
-      setScore(newScore); setUsedWords(updatedUsedWords)
-      setApiHistory(prev => [...prev, apiMsg, { role:'assistant', content:botText }])
-      const botMsg = { role:'assistant', content:botText, scoring, feedback, timestamp:Date.now() }
+      const reply = await sendMessage(settings.anthropicKey, systemPrompt.current, newHistory, trimmed)
+      const botText = reply.message || '...'
+      const botMsg = { role:'assistant', content:botText, feedback:reply.feedback, timestamp:Date.now() }
       setMessages(prev => [...prev, botMsg])
+      setApiHistory([...newHistory, { role:'assistant', content:botText }])
 
+      const { newScore, pointsThisTurn, updatedUsedWords, breakdown } = calculateScore(score, criteria, reply.scoring || {}, usedWords)
+      setScore(newScore)
+      setUsedWords(updatedUsedWords)
       if (breakdown.length) {
         setScoreLog(prev => [...prev, ...breakdown.map(b => ({...b, turn}))])
         if (pointsThisTurn > 0) showToast(`+${pointsThisTurn} pts !`)
       }
 
-      // Auto TTS
+      // Auto TTS with OpenAI key
       if (autoTTS) {
         setTtsPlayingId(botText.slice(0,20))
-        speak(botText, language, ttsOpts).then(() => setTtsPlayingId(null))
+        speak(botText, language, ttsOpts, settings.openaiKey).then(() => setTtsPlayingId(null))
       }
 
-      if (scoring.objective_reached) setTimeout(() => setGameOver(true), 800)
+      if (reply.scoring?.objective_reached) setTimeout(() => setGameOver(true), 800)
     } catch (err) {
       setError(`❌ ${err.message}`)
       setMessages(prev => prev.slice(0,-1))
@@ -303,6 +310,16 @@ export default function GameView({ config, settings, onEnd }) {
           <div className="wa-chat-bg">
             <div className="chat-messages" id="chat-messages">
               <div className="wa-system"><span>🎯 {scenario.objective}</span></div>
+              {!openingReady && (
+                <div className="wa-row wa-row-bot">
+                  <div className="wa-avatar">🎭</div>
+                  <div className="wa-bubble wa-bubble-bot">
+                    <div className="typing-indicator">
+                      <div className="typing-dot"/><div className="typing-dot"/><div className="typing-dot"/>
+                    </div>
+                  </div>
+                </div>
+              )}
               {messages.map((msg, i) => (
                 <WaMessage key={i} msg={msg}
                   onPlayTTS={handlePlayTTS}
@@ -332,17 +349,17 @@ export default function GameView({ config, settings, onEnd }) {
           <div className="wa-input-bar">
             {canUseOral && (
               <button className={`wa-input-btn ${isRecording?'recording':''}`}
-                onClick={handleMicClick} disabled={isThinking||gameOver}
+                onClick={handleMicClick} disabled={isThinking||gameOver||!openingReady}
                 title={isRecording?'Arrêter':'Enregistrer'}>
                 {isRecording ? '⏹️' : '🎙️'}
               </button>
             )}
             <textarea ref={textareaRef} className="wa-input-textarea"
               value={inputText} onChange={e => setInputText(e.target.value)} onKeyDown={handleKeyDown}
-              placeholder={isRecording ? '🔴 Enregistrement… cliquez ⏹️ pour terminer' : gameOver ? 'Jeu terminé !' : `Message en ${language}… (Entrée pour envoyer)`}
-              disabled={isThinking||isRecording||gameOver} rows={1} />
+              placeholder={!openingReady ? '⏳ Traduction en cours…' : isRecording ? '🔴 Enregistrement… cliquez ⏹️ pour terminer' : gameOver ? 'Jeu terminé !' : `Message en ${language}… (Entrée pour envoyer)`}
+              disabled={isThinking||isRecording||gameOver||!openingReady} rows={1} />
             <button className="wa-send-btn" onClick={() => handleSend(inputText)}
-              disabled={!inputText.trim()||isThinking||isRecording||gameOver}>
+              disabled={!inputText.trim()||isThinking||isRecording||gameOver||!openingReady}>
               <svg viewBox="0 0 24 24" width="20" height="20" fill="white"><path d="M1.101 21.757L23.8 12.028 1.101 2.3l.011 7.912 13.623 1.816-13.623 1.817-.011 7.912z"/></svg>
             </button>
           </div>
