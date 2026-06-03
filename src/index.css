@@ -165,3 +165,78 @@ a{color:var(--c-teacher);text-decoration:none}a:hover{text-decoration:underline}
 .game-over-card p{color:var(--c-text-muted);font-size:var(--fz-sm);margin-bottom:var(--sp-6)}
 .divider{border:none;border-top:1px solid var(--c-border);margin:var(--sp-5) 0}
 .text-muted{color:var(--c-text-muted)}.text-sm{font-size:var(--fz-sm)}.mt-2{margin-top:var(--sp-2)}.mt-4{margin-top:var(--sp-4)}
+
+
+/* ═══ WhatsApp-style game interface ═══════════════════════════════════════ */
+
+/* Header */
+.wa-header{display:flex;align-items:center;justify-content:space-between;padding:var(--sp-3) var(--sp-4);background:#075e54;color:white;gap:var(--sp-3);flex-shrink:0}
+.wa-header-left{display:flex;align-items:center;gap:var(--sp-3)}
+.wa-header-avatar{width:40px;height:40px;border-radius:50%;background:#128c7e;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
+.wa-header-name{font-weight:700;font-size:var(--fz-base)}
+.wa-header-sub{font-size:var(--fz-xs);opacity:.8}
+.wa-header-right{display:flex;align-items:center;gap:var(--sp-2)}
+
+/* Fixed-size score pill */
+.score-pill-fixed{display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);border-radius:var(--r-full);padding:4px 12px;min-width:90px;justify-content:center}
+.score-pill-label{font-size:var(--fz-xs);font-weight:600;opacity:.8;white-space:nowrap}
+.score-pill-value{font-size:var(--fz-md);font-weight:800;white-space:nowrap}
+
+.wa-icon-btn{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;color:white;opacity:.85;transition:opacity .15s,background .15s}
+.wa-icon-btn:hover{opacity:1;background:rgba(255,255,255,.15)}
+.wa-icon-btn.active{opacity:1;background:rgba(255,255,255,.2)}
+
+/* Chat background */
+.wa-chat-bg{flex:1;overflow-y:auto;background:#e5ddd5;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='60' height='60'%3E%3Crect width='60' height='60' fill='%23e5ddd5'/%3E%3Ccircle cx='30' cy='30' r='1' fill='%23d4c9bc' opacity='.4'/%3E%3C/svg%3E")}
+.chat-messages{padding:var(--sp-3) var(--sp-4);display:flex;flex-direction:column;gap:6px;min-height:100%}
+
+/* System message */
+.wa-system{display:flex;justify-content:center;margin:var(--sp-2) 0}
+.wa-system span{background:rgba(225,245,254,.9);color:#4a4a4a;font-size:var(--fz-xs);padding:4px 12px;border-radius:var(--r-full);box-shadow:0 1px 2px rgba(0,0,0,.1)}
+
+/* Message rows */
+.wa-row{display:flex;align-items:flex-end;gap:var(--sp-2);max-width:75%;animation:fadeIn .2s ease}
+.wa-row-user{align-self:flex-end;flex-direction:row-reverse}
+.wa-row-bot{align-self:flex-start}
+.wa-avatar{width:32px;height:32px;border-radius:50%;background:#25d366;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
+
+/* Bubbles */
+.wa-bubble{padding:8px 12px 4px;border-radius:8px;position:relative;box-shadow:0 1px 3px rgba(0,0,0,.15);max-width:100%}
+.wa-bubble-bot{background:#ffffff;border-top-left-radius:0}
+.wa-bubble-user{background:#dcf8c6;border-top-right-radius:0}
+
+/* Tails */
+.wa-bubble-bot::before{content:'';position:absolute;top:0;left:-8px;width:0;height:0;border-top:8px solid #ffffff;border-left:8px solid transparent}
+.wa-bubble-user::after{content:'';position:absolute;top:0;right:-8px;width:0;height:0;border-top:8px solid #dcf8c6;border-right:8px solid transparent}
+
+.wa-text{font-size:var(--fz-sm);line-height:1.5;color:#111;white-space:pre-wrap;word-break:break-word}
+.wa-meta{display:flex;align-items:center;justify-content:flex-end;gap:4px;margin-top:2px}
+.wa-time{font-size:10px;color:#8696a0}
+.wa-tick{font-size:12px;color:#53bdeb}
+.wa-feedback{font-size:11px;color:#8696a0;font-style:italic;margin-top:4px;border-top:1px solid rgba(0,0,0,.08);padding-top:4px}
+.wa-tts-btn{background:none;border:none;cursor:pointer;font-size:14px;opacity:.6;padding:0 2px;transition:opacity .15s}
+.wa-tts-btn:hover,.wa-tts-btn.active{opacity:1}
+
+/* Audio player bubble */
+.wa-audio-player{display:flex;align-items:center;gap:8px;min-width:200px;padding:2px 0}
+.wa-audio-btn{width:34px;height:34px;border-radius:50%;background:#25d366;color:white;font-size:14px;display:flex;align-items:center;justify-content:center;flex-shrink:0;border:none;cursor:pointer;transition:background .15s}
+.wa-audio-btn:hover{background:#1da851}
+.wa-audio-track{flex:1;position:relative;height:32px;display:flex;align-items:center}
+.wa-audio-progress{position:absolute;left:0;top:0;height:100%;background:rgba(37,211,102,.2);border-radius:4px;z-index:0;pointer-events:none}
+.wa-waveform{position:relative;z-index:1;display:flex;align-items:center;gap:1.5px;width:100%;height:32px}
+.wa-waveform-bar{flex:1;background:#8696a0;border-radius:2px;min-height:3px;opacity:.7}
+.wa-bubble-user .wa-waveform-bar{background:#5a9e6e}
+.wa-audio-dur{font-size:11px;color:#8696a0;white-space:nowrap;flex-shrink:0}
+.wa-audio-transcript{font-size:11px;color:#8696a0;font-style:italic;margin-top:4px;border-top:1px solid rgba(0,0,0,.06);padding-top:4px;width:100%}
+
+/* Input bar */
+.wa-input-bar{display:flex;align-items:flex-end;gap:8px;padding:8px 12px;background:#f0f0f0;border-top:1px solid #e0e0e0;flex-shrink:0}
+.wa-input-textarea{flex:1;resize:none;border:none;border-radius:24px;padding:10px 16px;font-size:var(--fz-sm);background:white;outline:none;max-height:100px;line-height:1.4;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.wa-input-textarea:focus{box-shadow:0 1px 5px rgba(0,0,0,.15)}
+.wa-input-textarea:disabled{background:#f8f8f8;color:#aaa}
+.wa-input-btn{width:42px;height:42px;border-radius:50%;border:none;background:white;font-size:20px;display:flex;align-items:center;justify-content:center;flex-shrink:0;box-shadow:0 1px 3px rgba(0,0,0,.15);transition:all .15s;cursor:pointer}
+.wa-input-btn:hover:not(:disabled){background:#f0f0f0}
+.wa-input-btn.recording{background:#fef2f2;animation:pulse 1s infinite}
+.wa-send-btn{width:42px;height:42px;border-radius:50%;background:#25d366;border:none;display:flex;align-items:center;justify-content:center;flex-shrink:0;cursor:pointer;transition:background .15s;box-shadow:0 2px 6px rgba(37,211,102,.4)}
+.wa-send-btn:hover:not(:disabled){background:#1da851}
+.wa-send-btn:disabled{background:#ccc;box-shadow:none}
