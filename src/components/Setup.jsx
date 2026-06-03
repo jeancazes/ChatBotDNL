@@ -29,13 +29,13 @@ export default function Setup({ settings, onSave, onBack }) {
       </div>
 
       <div className="form-group">
-        <label className="form-label">Clé API OpenAI (Whisper) <span className="form-hint">— mode oral uniquement</span></label>
+        <label className="form-label">Clé API OpenAI <span className="form-hint">— optionnelle · TTS haute qualité + fallback transcription</span></label>
         <div className="api-key-field">
           <input type={showOpenai ? 'text' : 'password'} className="form-input" value={openaiKey}
             onChange={(e) => setOpenaiKey(e.target.value)} placeholder="sk-proj-…" autoComplete="off" spellCheck={false} />
           <button className="btn-eye" type="button" onClick={() => setShowOpenai(!showOpenai)}>{showOpenai ? '🙈' : '👁️'}</button>
         </div>
-        <div className="setup-note">Obtenez votre clé sur <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">platform.openai.com</a>.</div>
+        <div className="setup-note">Optionnelle : la transcription vocale fonctionne sans clé (Whisper local). Utile uniquement pour la qualité TTS (voix FR/DE). → <a href="https://platform.openai.com/api-keys" target="_blank" rel="noreferrer">platform.openai.com</a></div>
       </div>
 
       <div style={{ display: 'flex', gap: '12px', marginTop: '8px' }}>
