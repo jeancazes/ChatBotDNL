@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { buildSystemPrompt, sendMessage, calculateScore, getLocalizedOpening } from '../utils/claude'
-import { transcribeAudio, startRecording, checkMicrophoneAvailable } from '../utils/whisper'
+import { transcribeAudio, startRecording, checkMicrophoneAvailable, initWhisper, isWhisperReady } from '../utils/whisper'
 import { speak, stopSpeaking, generateAudioBlob, playBlob, initKokoro, isKokoroReady } from '../utils/tts'
 
 const DIFF_LABELS = ['','🌱','🌿','⚡','🔥','💎']
@@ -60,16 +60,24 @@ function AudioPlayer({ blob, transcription, autoPlay = false }) {
   )
 }
 
-// ── Kokoro loading banner ─────────────────────────────────────────────────────
-function KokoroBanner({ pct }) {
-  if (pct >= 100) return null
+// ── AI models loading banner (Kokoro TTS + Whisper STT) ──────────────────────
+function ModelsBanner({ kokoroPct, whisperPct }) {
+  const items = [
+    kokoroPct < 100 && { label: '🎤 Voix IA (Kokoro)',           pct: kokoroPct },
+    whisperPct < 100 && { label: '👂 Transcription (Whisper)',   pct: whisperPct },
+  ].filter(Boolean)
+  if (!items.length) return null
   return (
-    <div style={{padding:'6px 16px',background:'#f0fdf4',borderBottom:'1px solid #bbf7d0',fontSize:'12px',color:'#166534',display:'flex',alignItems:'center',gap:10}}>
-      <span>🤖 Chargement voix IA (Kokoro)</span>
-      <div style={{flex:1,height:6,background:'#dcfce7',borderRadius:3,overflow:'hidden'}}>
-        <div style={{width:`${pct}%`,height:'100%',background:'#16a34a',transition:'width .3s'}} />
-      </div>
-      <span style={{minWidth:36,textAlign:'right'}}>{pct}%</span>
+    <div style={{background:'#f0fdf4',borderBottom:'1px solid #bbf7d0',padding:'4px 16px',display:'flex',flexDirection:'column',gap:4}}>
+      {items.map(({ label, pct }) => (
+        <div key={label} style={{display:'flex',alignItems:'center',gap:10,fontSize:'12px',color:'#166534'}}>
+          <span style={{minWidth:200}}>{label}</span>
+          <div style={{flex:1,height:5,background:'#dcfce7',borderRadius:3,overflow:'hidden'}}>
+            <div style={{width:`${pct}%`,height:'100%',background:'#16a34a',transition:'width .3s'}} />
+          </div>
+          <span style={{minWidth:36,textAlign:'right'}}>{pct}%</span>
+        </div>
+      ))}
     </div>
   )
 }
@@ -153,15 +161,17 @@ export default function GameView({ config, settings, onEnd }) {
   const [autoTTS, setAutoTTS]           = useState(true)
   const [openingReady, setOpeningReady] = useState(false)
   const [kokoroPct, setKokoroPct]       = useState(isKokoroReady() ? 100 : 0)
+  const [whisperPct, setWhisperPct]     = useState(isWhisperReady() ? 100 : 0)
 
   const messagesEndRef = useRef(null)
   const textareaRef    = useRef(null)
   const systemPrompt   = useRef(buildSystemPrompt(scenario, difficulty, language))
   const toastTimer     = useRef(null)
 
-  // Pre-warm Kokoro in worker background
+  // Pre-warm AI models in background workers
   useEffect(() => {
-    if (!isKokoroReady()) initKokoro((pct) => setKokoroPct(pct))
+    if (!isKokoroReady())   initKokoro((pct)   => setKokoroPct(pct))
+    if (!isWhisperReady()) initWhisper((pct)  => setWhisperPct(pct))
   }, [])
 
   // Translate opening phrase & display first message
@@ -317,8 +327,8 @@ export default function GameView({ config, settings, onEnd }) {
         </div>
       </div>
 
-      {/* ── Kokoro loading banner ── */}
-      <KokoroBanner pct={kokoroPct} />
+      {/* ── AI models loading banner ── */}
+      <ModelsBanner kokoroPct={kokoroPct} whisperPct={whisperPct} />
 
       {/* ── Resources overlay ── */}
       {showResources && (
