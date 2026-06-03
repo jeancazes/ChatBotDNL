@@ -1,74 +1,77 @@
 /**
- * Text-to-Speech — three-tier system
+ * TTS — three-tier system (all non-blocking)
  *
- * 1. Kokoro TTS  — free, runs in-browser via ONNX WASM (~80 MB, cached after first load)
- *                  Used for English & Spanish (excellent quality).
- * 2. OpenAI TTS  — tts-1-hd, paid per character, excellent for all languages
- *                  Primary for FR/DE, fallback for EN/ES.
- * 3. Web Speech  — browser built-in, free, quality varies by OS. Last resort.
+ * 1. Kokoro   — free, ONNX WASM in a Web Worker (never blocks main thread)
+ *               Primary for English & Spanish.
+ * 2. OpenAI   — tts-1-hd, excellent for all languages, paid per character
+ *               Primary for Français & Deutsch; fallback for EN/ES.
+ * 3. Web Speech — browser built-in, free, last resort.
  */
 
-// ─── Kokoro ────────────────────────────────────────────────────────────────────
-// Available voices shipped with kokoro-js 1.x:
-// EN-US female: af_heart af_alloy af_aoede af_bella af_jessica af_kore af_nicole af_nova af_river af_sarah af_sky
-// EN-US male:   am_adam am_echo am_eric am_fenrir am_liam am_michael am_onyx am_puck am_santa
-// EN-GB female: bf_alice bf_emma bf_isabella bf_lily
-// EN-GB male:   bm_daniel bm_fable bm_george bm_lewis
-// FR female:    ff_siwis
-// ES female:    ef_dora  ES male: em_alex em_santa
+// ─── Kokoro Web Worker ─────────────────────────────────────────────────────────
+
+const KOKORO_GOOD_LANGS = new Set(['English', 'Español'])
 
 const KOKORO_VOICES = {
   English: { male: 'bm_george', female: 'bf_emma'  },
   Español: { male: 'em_alex',   female: 'ef_dora'  },
-  Français:{ male: 'ff_siwis',  female: 'ff_siwis' }, // limited — used only when no OpenAI key
-  Deutsch: null, // no DE voice — always fallback
+  Français:{ male: 'ff_siwis',  female: 'ff_siwis' },
+  Deutsch: null,
 }
 
-// Languages where Kokoro has strong coverage
-const KOKORO_GOOD_LANGS = new Set(['English', 'Español'])
+let _worker        = null
+let _workerState   = 'idle'  // idle | loading | ready | error
+let _initResolvers = []
+let _progressCb    = null
+let _pending       = new Map() // id → {resolve, reject}
+let _genId         = 0
 
-let _kokoroTTS   = null
-let _kokoroState = 'idle' // 'idle' | 'loading' | 'ready' | 'error'
-let _kokoroQueue = []
+function ensureWorker() {
+  if (_worker) return _worker
+  _worker = new Worker(new URL('../workers/kokoro.worker.js', import.meta.url), { type: 'module' })
+  _worker.onmessage = ({ data }) => {
+    switch (data.type) {
+      case 'progress':
+        _progressCb?.(data.pct)
+        break
+      case 'ready':
+        _workerState = 'ready'
+        _progressCb?.(100)
+        _initResolvers.forEach(r => r(true)); _initResolvers = []
+        break
+      case 'error':
+        _workerState = 'error'
+        console.warn('Kokoro worker error:', data.message)
+        _initResolvers.forEach(r => r(false)); _initResolvers = []
+        break
+      case 'generated': {
+        const p = _pending.get(data.id)
+        if (p) { _pending.delete(data.id); p.resolve(data.blob) }
+        break
+      }
+      case 'gen_error': {
+        const p = _pending.get(data.id)
+        if (p) { _pending.delete(data.id); p.reject(new Error(data.message)) }
+        break
+      }
+    }
+  }
+  return _worker
+}
 
-/**
- * Pre-warm Kokoro model (downloads ~80 MB on first use, then cached).
- * Call early (game mount) so the model is ready when the student speaks.
- * @param {(pct: number) => void} onProgress  — 0..100
- */
 export async function initKokoro(onProgress) {
-  if (_kokoroState === 'ready')   { onProgress?.(100); return true  }
-  if (_kokoroState === 'error')   { return false }
-  if (_kokoroState === 'loading') {
-    return new Promise(resolve => _kokoroQueue.push(resolve))
-  }
-  _kokoroState = 'loading'
+  if (_workerState === 'ready')   { onProgress?.(100); return true }
+  if (_workerState === 'error')   return false
+  if (_workerState === 'loading') return new Promise(r => _initResolvers.push(r))
+  _workerState = 'loading'
+  _progressCb = onProgress
   onProgress?.(0)
-  try {
-    const { KokoroTTS } = await import('kokoro-js')
-    _kokoroTTS = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
-      dtype: 'q8',
-      device: 'wasm',
-      progress_callback: (info) => {
-        if (info.status === 'progress' && info.total) {
-          onProgress?.(Math.round((info.loaded / info.total) * 100))
-        }
-      },
-    })
-    _kokoroState = 'ready'
-    onProgress?.(100)
-    _kokoroQueue.forEach(r => r(true)); _kokoroQueue = []
-    return true
-  } catch (err) {
-    console.warn('Kokoro init failed:', err)
-    _kokoroState = 'error'
-    _kokoroQueue.forEach(r => r(false)); _kokoroQueue = []
-    return false
-  }
+  ensureWorker().postMessage({ type: 'init' })
+  return new Promise(r => _initResolvers.push(r))
 }
 
-export function isKokoroReady()   { return _kokoroState === 'ready'   }
-export function isKokoroLoading() { return _kokoroState === 'loading' }
+export function isKokoroReady()   { return _workerState === 'ready'   }
+export function isKokoroLoading() { return _workerState === 'loading' }
 
 function pickKokoroVoice(language, opts) {
   if (opts.kokoroVoice) return opts.kokoroVoice
@@ -77,36 +80,22 @@ function pickKokoroVoice(language, opts) {
   return opts.gender === 'female' ? map.female : map.male
 }
 
-let _currentKokoroAudio = null
-
-async function speakKokoro(text, language, opts) {
-  if (_kokoroState !== 'ready' || !_kokoroTTS) return false
+async function generateKokoroBlob(text, language, opts) {
+  if (_workerState !== 'ready') return null
   const voice = pickKokoroVoice(language, opts)
-  if (!voice) return false
-  stopKokoro()
-  try {
-    const audio = await _kokoroTTS.generate(text, { voice, speed: opts.rate ?? 1.0 })
-    // audio.toBlob() → WAV Blob (audio.audio = Float32Array, audio.sampling_rate = 24000)
-    const blob = audio.toBlob()
-    const url  = URL.createObjectURL(blob)
-    return new Promise((resolve) => {
-      const a = new Audio(url)
-      _currentKokoroAudio = a
-      a.onended  = () => { URL.revokeObjectURL(url); _currentKokoroAudio = null; resolve(true)  }
-      a.onerror  = () => { URL.revokeObjectURL(url); _currentKokoroAudio = null; resolve(false) }
-      a.play()
-    })
-  } catch (err) {
-    console.warn('Kokoro generate failed:', err)
-    return false
-  }
-}
-
-function stopKokoro() {
-  if (_currentKokoroAudio) { _currentKokoroAudio.pause(); _currentKokoroAudio = null }
+  if (!voice) return null
+  const id = ++_genId
+  return new Promise((resolve, reject) => {
+    _pending.set(id, { resolve, reject })
+    ensureWorker().postMessage({ type: 'generate', id, text, voice, speed: opts.rate ?? 1.0 })
+    setTimeout(() => {
+      if (_pending.has(id)) { _pending.delete(id); reject(new Error('Kokoro timeout')) }
+    }, 30000)
+  })
 }
 
 // ─── OpenAI TTS ────────────────────────────────────────────────────────────────
+
 const OPENAI_VOICES = {
   Français: { male: 'onyx',  female: 'nova'    },
   English:  { male: 'echo',  female: 'shimmer' },
@@ -120,10 +109,7 @@ function pickOpenAIVoice(language, opts) {
   return opts.gender === 'female' ? map.female : map.male
 }
 
-let _currentOpenAIAudio = null
-
-async function speakOpenAI(text, language, opts, openaiKey) {
-  stopOpenAI()
+async function generateOpenAIBlob(text, language, opts, openaiKey) {
   const voice = pickOpenAIVoice(language, opts)
   const speed = Math.min(4.0, Math.max(0.25, opts.rate ?? 1.0))
   const resp = await fetch('https://api.openai.com/v1/audio/speech', {
@@ -135,22 +121,31 @@ async function speakOpenAI(text, language, opts, openaiKey) {
     const err = await resp.json().catch(() => ({}))
     throw new Error(err.error?.message || `OpenAI TTS ${resp.status}`)
   }
-  const blob = await resp.blob()
-  const url  = URL.createObjectURL(blob)
+  return resp.blob()
+}
+
+// ─── Shared playback ───────────────────────────────────────────────────────────
+
+let _currentAudio = null
+
+export function playBlob(blob) {
+  stopCurrent()
+  const url = URL.createObjectURL(blob)
   return new Promise((resolve) => {
     const a = new Audio(url)
-    _currentOpenAIAudio = a
-    a.onended  = () => { URL.revokeObjectURL(url); _currentOpenAIAudio = null; resolve(true)  }
-    a.onerror  = () => { URL.revokeObjectURL(url); _currentOpenAIAudio = null; resolve(false) }
-    a.play()
+    _currentAudio = a
+    a.onended  = () => { URL.revokeObjectURL(url); _currentAudio = null; resolve(true)  }
+    a.onerror  = () => { URL.revokeObjectURL(url); _currentAudio = null; resolve(false) }
+    a.play().catch(() => { URL.revokeObjectURL(url); _currentAudio = null; resolve(false) })
   })
 }
 
-function stopOpenAI() {
-  if (_currentOpenAIAudio) { _currentOpenAIAudio.pause(); _currentOpenAIAudio = null }
+function stopCurrent() {
+  if (_currentAudio) { _currentAudio.pause(); _currentAudio = null }
 }
 
 // ─── Web Speech fallback ───────────────────────────────────────────────────────
+
 let _wsTimer = null
 const FEMALE_NAMES = ['marie','amélie','alice','julie','sarah','karen','moira','tessa','fiona','veena']
 const MALE_NAMES   = ['thomas','nicolas','pierre','daniel','fred','jorge','markus','hans']
@@ -188,40 +183,38 @@ function stopWebSpeech() {
 }
 
 // ─── Public API ────────────────────────────────────────────────────────────────
-export function stopSpeaking() {
-  stopKokoro(); stopOpenAI(); stopWebSpeech()
-}
+
+export function stopSpeaking() { stopCurrent(); stopWebSpeech() }
 
 export function isSpeaking() {
-  return !!_currentKokoroAudio || !!_currentOpenAIAudio || (window.speechSynthesis?.speaking ?? false)
+  return !!_currentAudio || (window.speechSynthesis?.speaking ?? false)
 }
 
 /**
- * Speak text using the best available engine.
- *
- * English / Español  → Kokoro (if ready) → OpenAI → WebSpeech
- * Français / Deutsch → OpenAI (if key)   → Kokoro (FR only, limited) → WebSpeech
+ * Generate an audio Blob for text without playing it.
+ * Returns null if both Kokoro and OpenAI are unavailable.
  */
-export async function speak(text, language, opts = {}, openaiKey = null) {
-  if (!text) return false
+export async function generateAudioBlob(text, language, opts = {}, openaiKey = null) {
+  if (!text) return null
   const kokoroFirst = KOKORO_GOOD_LANGS.has(language)
 
   if (kokoroFirst) {
-    if (_kokoroState === 'ready') {
-      const ok = await speakKokoro(text, language, opts)
-      if (ok) return true
-    }
-    if (openaiKey) {
-      try { return await speakOpenAI(text, language, opts, openaiKey) } catch (e) { console.warn('OpenAI TTS:', e) }
-    }
+    try { const b = await generateKokoroBlob(text, language, opts); if (b) return b } catch {}
+    if (openaiKey) { try { return await generateOpenAIBlob(text, language, opts, openaiKey) } catch (e) { console.warn('OpenAI:', e) } }
   } else {
-    if (openaiKey) {
-      try { return await speakOpenAI(text, language, opts, openaiKey) } catch (e) { console.warn('OpenAI TTS:', e) }
-    }
-    if (_kokoroState === 'ready' && language === 'Français') {
-      const ok = await speakKokoro(text, language, opts)
-      if (ok) return true
-    }
+    if (openaiKey) { try { return await generateOpenAIBlob(text, language, opts, openaiKey) } catch (e) { console.warn('OpenAI:', e) } }
+    if (language === 'Français') { try { const b = await generateKokoroBlob(text, language, opts); if (b) return b } catch {} }
   }
+  return null
+}
+
+/**
+ * Speak text — generates blob then plays it; falls back to Web Speech.
+ * Non-blocking: Kokoro runs in a Web Worker.
+ */
+export async function speak(text, language, opts = {}, openaiKey = null) {
+  if (!text) return false
+  const blob = await generateAudioBlob(text, language, opts, openaiKey)
+  if (blob) return playBlob(blob)
   return speakWebSpeech(text, language, opts)
 }
