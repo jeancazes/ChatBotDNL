@@ -162,6 +162,7 @@ export default function GameView({ config, settings, onEnd }) {
   const [openingReady, setOpeningReady] = useState(false)
   const [kokoroPct, setKokoroPct]       = useState(isKokoroReady() ? 100 : 0)
   const [whisperPct, setWhisperPct]     = useState(isWhisperReady() ? 100 : 0)
+  const [whisperPct, setWhisperPct]     = useState(isWhisperReady() ? 100 : 0)
 
   const messagesEndRef = useRef(null)
   const textareaRef    = useRef(null)
