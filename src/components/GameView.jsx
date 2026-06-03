@@ -6,7 +6,7 @@ import { speak, stopSpeaking, generateAudioBlob, playBlob, initKokoro, isKokoroR
 const DIFF_LABELS = ['','🌱','🌿','⚡','🔥','💎']
 const TRANSCRIPTION_PENALTY = 5
 // Probability of a bot message being voice-only, by difficulty level (index = difficulty)
-const VOICE_ONLY_PROBA = [0, 0, 0, 0.15, 0.30, 0.50]
+const VOICE_ONLY_PROBA = [0, 0.50, 0.75, 1.0, 1.0, 1.0]
 
 function formatTime(ts) {
   return new Date(ts).toLocaleTimeString('fr-FR', { hour:'2-digit', minute:'2-digit' })
