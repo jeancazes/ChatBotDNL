@@ -282,7 +282,7 @@ export default function GameView({ config, settings, onEnd }) {
   }
 
   const handleMicClick = async () => {
-    if (!settings.openaiKey) { setError("⚠️ Clé API OpenAI manquante pour le mode oral."); return }
+    // Browser Whisper works without OpenAI key
     if (isRecording) {
       try {
         const blob = await recorderRef.stop(); setIsRecording(false); setRecorderRef(null); setIsThinking(true)
